@@ -1,0 +1,61 @@
+#!/bin/bash
+
+set -eux
+
+DIRECTORY=$1
+
+# Get OS version
+if [[ "$OSTYPE" == "linux-gnu"*  ]]; then
+  os_version=$(lsb_release -ds)
+elif [[ "$OSTYPE" == "darwin"*  ]]; then
+  os_version=$(sw_vers -productVersion)
+else
+  os_version=$(lsb_release -ds)
+fi
+os_version="${os_version// /_}"
+
+# Get MAC address
+if [[ "$OSTYPE" == "linux-gnu"*  ]]; then
+  mac_address=$(ip link show | awk '/ether/ {print $2; exit}')
+elif [[ "$OSTYPE" == "darwin"*  ]]; then
+  mac_address=$(ifconfig en0 | awk '/ether/ {print $2}')
+else
+  mac_address=$(ip link show | awk '/ether/ {print $2; exit}')
+fi
+
+mapfile -t results < <(./debian-yara -C *.yarac -sr $DIRECTORY)
+
+# Initialize variables
+zip_name=""
+file_list=()
+
+for line in "${results[@]}"; do
+  # Split the line into fields based on space delimiter
+  fields=($line)
+
+  # Extract the first field as the zip name (if not already set)
+  if [ -z "$zip_name" ]; then
+    zip_name="$os_version.$mac_address.${fields[0]}"
+  fi
+
+  echo $line >> $zip_name.metadata.txt
+
+  # Extract the second field as the file path and add it to the file list
+  if [[ ! $line =~ ^0x  ]]; then
+    file_path="${fields[1]}"
+    file_list+=("$file_path")
+  fi
+done
+
+file_count=`echo ${file_list[@]} | wc -w`
+
+if [ -z "$zip_name" ]; then
+  touch temp.txt
+  zip -e -P "infected" UnknownCyber.detections_0.zip temp.txt &> /dev/null
+  rm temp.txt
+  zip -d UnknownCyber.detections_0.zip temp.txt &> /dev/null
+  echo No matches found
+else
+  # Create the zip file with the collected file paths
+  zip -e -P "infected" "$zip_name.detections_${file_count}.zip" "${file_list[@]}"
+fi;
