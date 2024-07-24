@@ -1,44 +1,54 @@
 #!/bin/bash
 
-set -eux
+set -eu
 
 DIRECTORY=$1
 
+if [ ! -e "debian-yara" ]; then
+  echo "Missing yara scanner"
+  exit 1;
+fi
+
+if [ ! -n "$(ls -A *.yarac 2>/dev/null)" ]; then
+  echo "No yara rules detected"
+  exit 1;
+fi
+
+if [ ! -e $DIRECTORY ]; then
+  echo "Invalid scan directory specified"
+  exit 1;
+fi
+
+if [[ ! $DIRECTORY == "/" ]]; then DIRECTORY=${DIRECTORY%/}
+fi
+
 # Get OS version
-if [[ "$OSTYPE" == "linux-gnu"*  ]]; then
-  os_version=$(lsb_release -ds)
-elif [[ "$OSTYPE" == "darwin"*  ]]; then
-  os_version=$(sw_vers -productVersion)
-else
-  os_version=$(lsb_release -ds)
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then os_version=$(lsb_release -ds)
+elif [[ "$OSTYPE" == "darwin"* ]]; then os_version=$(sw_vers -productVersion)
+else os_version=$(lsb_release -ds)
 fi
 os_version="${os_version// /_}"
 
 # Get MAC address
-if [[ "$OSTYPE" == "linux-gnu"*  ]]; then
-  mac_address=$(ip link show | awk '/ether/ {print $2; exit}')
-elif [[ "$OSTYPE" == "darwin"*  ]]; then
-  mac_address=$(ifconfig en0 | awk '/ether/ {print $2}')
-else
-  mac_address=$(ip link show | awk '/ether/ {print $2; exit}')
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then mac_address=$(ip link show | awk '/ether/ {print $2; exit}')
+elif [[ "$OSTYPE" == "darwin"* ]]; then mac_address=$(ifconfig en0 | awk '/ether/ {print $2}') else mac_address=$(ip link show | awk '/ether/ {print $2; exit}')
 fi
 
+echo "Running yara scanner..."
 mapfile -t results < <(./debian-yara -C *.yarac -sr $DIRECTORY)
+echo "Scan finished, writing metadata..."
 
 # Initialize variables
-zip_name=""
+NOW=`date +'%m-%d-%y-%H:%M:%S:%N'`
+zip_name="$mac_address.$os_version.${NOW}"
+metafile=$zip_name.metadata.txt
 file_list=()
 
 for line in "${results[@]}"; do
   # Split the line into fields based on space delimiter
   fields=($line)
 
-  # Extract the first field as the zip name (if not already set)
-  if [ -z "$zip_name" ]; then
-    zip_name="$os_version.$mac_address.${fields[0]}"
-  fi
-
-  echo $line >> $zip_name.metadata.txt
+  echo $line >> $metafile
 
   # Extract the second field as the file path and add it to the file list
   if [[ ! $line =~ ^0x  ]]; then
@@ -48,14 +58,18 @@ for line in "${results[@]}"; do
 done
 
 file_count=`echo ${file_list[@]} | wc -w`
+zipfile="$zip_name.detections_${file_count}.zip"
 
-if [ -z "$zip_name" ]; then
-  touch temp.txt
-  zip -e -P "infected" UnknownCyber.detections_0.zip temp.txt &> /dev/null
-  rm temp.txt
-  zip -d UnknownCyber.detections_0.zip temp.txt &> /dev/null
-  echo No matches found
-else
+echo "Compressing and archiving ${file_count} found matches..."
+if [ $file_count -gt 0 ]; then
   # Create the zip file with the collected file paths
-  zip -e -P "infected" "$zip_name.detections_${file_count}.zip" "${file_list[@]}"
+  zip -e -P "infected" $zipfile "${file_list[@]}" 1> /dev/null
+else
+  touch temp.txt
+  zip -e -P "infected" $zipfile temp.txt 1> /dev/null
+  rm temp.txt
+  zip -d $zipfile temp.txt 1> /dev/null
 fi;
+
+echo "Metadata file: $metafile"
+echo "Archived file: $zipfile"
